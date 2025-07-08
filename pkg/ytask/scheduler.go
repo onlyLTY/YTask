@@ -2,6 +2,7 @@ package ytask
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"runtime"
 	"sort"
@@ -481,8 +482,25 @@ func (s *Scheduler) executeTask(task Task, config TaskTypeConfig) {
 		execFunc = s.middlewares[i](execFunc)
 	}
 
-	// Execute the task
-	err := execFunc(ctx, task)
+	// Execute the task with panic recovery
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Convert panic to error
+				switch v := r.(type) {
+				case error:
+					err = v
+				case string:
+					err = fmt.Errorf("panic: %s", v)
+				default:
+					err = fmt.Errorf("panic: %v", r)
+				}
+			}
+		}()
+		// Execute the task
+		err = execFunc(ctx, task)
+	}()
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
