@@ -1,4 +1,4 @@
-module YTask
+module github.com/onlyLTY/YTask
 
 go 1.24
 
