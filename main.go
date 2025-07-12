@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"YTask/pkg/ytask"
+	"github.com/onlyLTY/YTask/pkg/ytask"
 )
 
 // EmailTask is a custom task type for sending emails
