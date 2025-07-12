@@ -232,6 +232,86 @@ func (s *Scheduler) CancelTask(taskID string) bool {
 	return false
 }
 
+// CancelTasksByType cancels all tasks of a specific type
+func (s *Scheduler) CancelTasksByType(taskType string) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Check if the task type exists
+	queues, exists := s.taskQueues[taskType]
+	if !exists {
+		return 0
+	}
+
+	cancelledCount := 0
+
+	// Iterate through all priority queues for this task type
+	for priority, queue := range queues {
+		for _, task := range queue {
+			// Update task status
+			task.SetStatus(TaskStatusCancelled)
+			cancelledCount++
+		}
+
+		// Update stats
+		queueLength := int64(len(queue))
+		atomic.AddInt64(&s.stats[taskType].Queued, -queueLength)
+		atomic.AddInt64(&s.globalStats.Queued, -queueLength)
+		atomic.AddInt64(&s.stats[taskType].Cancelled, queueLength)
+		atomic.AddInt64(&s.globalStats.Cancelled, queueLength)
+
+		// Clear the queue
+		s.taskQueues[taskType][priority] = make([]Task, 0)
+	}
+
+	return cancelledCount
+}
+
+// ClearTasksByType removes all tasks of a specific type without marking them as cancelled
+// and resets all counters for this task type to 0
+func (s *Scheduler) ClearTasksByType(taskType string) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	// Check if the task type exists
+	queues, exists := s.taskQueues[taskType]
+	if !exists {
+		return 0
+	}
+
+	clearedCount := 0
+
+	// Iterate through all priority queues for this task type
+	for priority, queue := range queues {
+		// Count cleared tasks
+		clearedCount += len(queue)
+
+		// Clear the queue
+		s.taskQueues[taskType][priority] = make([]Task, 0)
+	}
+
+	// Get current stats for this task type
+	taskStats := s.stats[taskType]
+
+	// Update global stats by decrementing the current values
+	atomic.AddInt64(&s.globalStats.Queued, -atomic.LoadInt64(&taskStats.Queued))
+	atomic.AddInt64(&s.globalStats.Executing, -atomic.LoadInt64(&taskStats.Executing))
+	atomic.AddInt64(&s.globalStats.Completed, -atomic.LoadInt64(&taskStats.Completed))
+	atomic.AddInt64(&s.globalStats.Failed, -atomic.LoadInt64(&taskStats.Failed))
+	atomic.AddInt64(&s.globalStats.Paused, -atomic.LoadInt64(&taskStats.Paused))
+	atomic.AddInt64(&s.globalStats.Cancelled, -atomic.LoadInt64(&taskStats.Cancelled))
+
+	// Reset all counters for this task type to 0
+	atomic.StoreInt64(&taskStats.Queued, 0)
+	atomic.StoreInt64(&taskStats.Executing, 0)
+	atomic.StoreInt64(&taskStats.Completed, 0)
+	atomic.StoreInt64(&taskStats.Failed, 0)
+	atomic.StoreInt64(&taskStats.Paused, 0)
+	atomic.StoreInt64(&taskStats.Cancelled, 0)
+
+	return clearedCount
+}
+
 // GetStats returns statistics for all task types
 func (s *Scheduler) GetStats() map[string]*TaskStats {
 	s.mutex.RLock()
@@ -301,7 +381,6 @@ func (s *Scheduler) processTasks() {
 	}
 
 	// Shuffle task types to ensure fairness
-	// In a real implementation, you might want a more sophisticated approach
 	sort.Strings(taskTypes)
 
 	for _, taskType := range taskTypes {
