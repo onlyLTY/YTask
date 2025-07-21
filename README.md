@@ -193,6 +193,42 @@ stats := scheduler.GetStats()
 globalStats := scheduler.GetGlobalStats()
 ```
 
+### Namespace Support
+
+Namespaces allow you to group related task types and apply concurrency limits at the namespace level.
+
+```go
+// Register task types with namespaces
+scheduler.RegisterTaskTypeWithNamespace("email", "communication", ytask.TaskTypeConfig{
+    MaxConcurrency:   2,
+    PriorityLevels:   3,
+    PriorityMode:     ytask.PriorityModeStrict,
+    FilterDuplicates: true,
+})
+
+scheduler.RegisterTaskTypeWithNamespace("sms", "communication", ytask.TaskTypeConfig{
+    MaxConcurrency:   2,
+    PriorityLevels:   3,
+    PriorityMode:     ytask.PriorityModeStrict,
+    FilterDuplicates: true,
+})
+
+// Set namespace concurrency limits
+scheduler.SetNamespaceMaxConcurrency("communication", 3) // Max 3 concurrent tasks in communication namespace
+
+// Pause all tasks in a namespace
+scheduler.PauseNamespace("communication")
+
+// Resume all tasks in a namespace
+scheduler.ResumeNamespace("communication")
+```
+
+Using namespaces provides several benefits:
+- Group related task types logically
+- Apply concurrency limits at the namespace level
+- Pause/resume all task types in a namespace at once
+- Better organize your task processing pipeline
+
 ## API Reference
 
 ### Core Types

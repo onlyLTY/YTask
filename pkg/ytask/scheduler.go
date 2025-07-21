@@ -82,6 +82,15 @@ type Scheduler struct {
 	ctx context.Context
 	// cancel is the cancel function for the scheduler's context
 	cancel context.CancelFunc
+
+	// taskTypeToNamespace maps task types to namespaces
+	taskTypeToNamespace map[string]string
+	// namespaceMaxConcurrency holds the maximum concurrency for each namespace
+	namespaceMaxConcurrency map[string]int
+	// namespaceActiveTasks tracks currently executing tasks by namespace
+	namespaceActiveTasks map[string]int
+	// pausedNamespaces tracks which namespaces are paused
+	pausedNamespaces map[string]bool
 }
 
 // NewScheduler creates a new task scheduler
@@ -105,11 +114,22 @@ func NewScheduler(maxGlobalConcurrency int) *Scheduler {
 		pausedTypes:              make(map[string]bool),
 		ctx:                      ctx,
 		cancel:                   cancel,
+		taskTypeToNamespace:      make(map[string]string),
+		namespaceMaxConcurrency:  make(map[string]int),
+		namespaceActiveTasks:     make(map[string]int),
+		pausedNamespaces:         make(map[string]bool),
 	}
 }
 
 // RegisterTaskType registers a new task type with the scheduler
 func (s *Scheduler) RegisterTaskType(taskType string, config TaskTypeConfig) {
+	s.RegisterTaskTypeWithNamespace(taskType, "", config)
+}
+
+// RegisterTaskTypeWithNamespace registers a new task type with the scheduler and associates it with a namespace.
+// This allows for grouping related task types and applying concurrency limits at the namespace level.
+// If namespace is empty, the task type is not associated with any namespace.
+func (s *Scheduler) RegisterTaskTypeWithNamespace(taskType string, namespace string, config TaskTypeConfig) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -127,6 +147,16 @@ func (s *Scheduler) RegisterTaskType(taskType string, config TaskTypeConfig) {
 
 	// Initialize active tasks count
 	s.activeTasks[taskType] = 0
+
+	// Associate task type with namespace if provided
+	if namespace != "" {
+		s.taskTypeToNamespace[taskType] = namespace
+
+		// Initialize namespace active tasks count if it doesn't exist
+		if _, exists := s.namespaceActiveTasks[namespace]; !exists {
+			s.namespaceActiveTasks[namespace] = 0
+		}
+	}
 }
 
 // AddTask adds a task to the scheduler
@@ -353,6 +383,41 @@ func (s *Scheduler) SetMaxGlobalConcurrency(max int) {
 	s.maxGlobalConcurrency = max
 }
 
+// SetNamespaceMaxConcurrency sets the maximum concurrency for a namespace.
+// This limits the total number of tasks that can be executed concurrently across all task types in the namespace.
+// If max <= 0, the concurrency limit for the namespace is removed.
+func (s *Scheduler) SetNamespaceMaxConcurrency(namespace string, max int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if max <= 0 {
+		// Remove the concurrency limit if max <= 0
+		delete(s.namespaceMaxConcurrency, namespace)
+	} else {
+		s.namespaceMaxConcurrency[namespace] = max
+	}
+}
+
+// PauseNamespace pauses processing of all task types in a namespace.
+// This prevents any tasks in the namespace from being executed until ResumeNamespace is called.
+// Tasks that are already executing will continue to run until completion.
+func (s *Scheduler) PauseNamespace(namespace string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.pausedNamespaces[namespace] = true
+}
+
+// ResumeNamespace resumes processing of all task types in a namespace.
+// This allows tasks in the namespace to be executed after they were paused with PauseNamespace.
+// The scheduler will start processing tasks in the namespace on the next processing cycle.
+func (s *Scheduler) ResumeNamespace(namespace string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	delete(s.pausedNamespaces, namespace)
+}
+
 // processTasksLoop continuously processes tasks
 func (s *Scheduler) processTasksLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -375,9 +440,18 @@ func (s *Scheduler) processTasks() {
 	// Create a list of task types to process
 	taskTypes := make([]string, 0, len(s.taskQueues))
 	for taskType := range s.taskQueues {
-		if !s.pausedTypes[taskType] {
-			taskTypes = append(taskTypes, taskType)
+		// Skip paused task types
+		if s.pausedTypes[taskType] {
+			continue
 		}
+
+		// Skip task types in paused namespaces
+		namespace, hasNamespace := s.taskTypeToNamespace[taskType]
+		if hasNamespace && s.pausedNamespaces[namespace] {
+			continue
+		}
+
+		taskTypes = append(taskTypes, taskType)
 	}
 
 	// Shuffle task types to ensure fairness
@@ -388,6 +462,15 @@ func (s *Scheduler) processTasks() {
 		currentGlobal := atomic.LoadInt32(&s.currentGlobalConcurrency)
 		if int(currentGlobal) >= s.maxGlobalConcurrency {
 			break // Stop processing if we've reached the global limit
+		}
+
+		// Check namespace concurrency limit if applicable
+		namespace, hasNamespace := s.taskTypeToNamespace[taskType]
+		if hasNamespace {
+			maxNamespaceConcurrency, hasLimit := s.namespaceMaxConcurrency[namespace]
+			if hasLimit && s.namespaceActiveTasks[namespace] >= maxNamespaceConcurrency {
+				continue // Skip this task type if namespace limit reached
+			}
 		}
 
 		config := s.taskConfigs[taskType]
@@ -529,6 +612,12 @@ func (s *Scheduler) processTasks() {
 			s.activeTasks[taskType]++
 			atomic.AddInt32(&s.currentGlobalConcurrency, 1)
 
+			// Update namespace active tasks count if applicable
+			namespace, hasNamespace := s.taskTypeToNamespace[taskType]
+			if hasNamespace {
+				s.namespaceActiveTasks[namespace]++
+			}
+
 			task.SetStatus(TaskStatusExecuting)
 
 			// Start task execution in a goroutine
@@ -549,6 +638,8 @@ func (s *Scheduler) executeTask(task Task, config TaskTypeConfig) {
 
 	// Create a context for this task
 	ctx, cancel := context.WithCancel(s.ctx)
+	// Add task to context so it can be retrieved by middleware or task functions
+	ctx = context.WithValue(ctx, "task", task)
 	defer cancel()
 
 	// Build the execution chain with middleware
@@ -586,6 +677,12 @@ func (s *Scheduler) executeTask(task Task, config TaskTypeConfig) {
 
 	// Update active tasks count
 	s.activeTasks[taskType]--
+
+	// Update namespace active tasks count if applicable
+	namespace, hasNamespace := s.taskTypeToNamespace[taskType]
+	if hasNamespace {
+		s.namespaceActiveTasks[namespace]--
+	}
 
 	// Update stats
 	atomic.AddInt64(&s.stats[taskType].Executing, -1)

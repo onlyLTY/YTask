@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/onlyLTY/YTask/pkg/ytask"
@@ -39,6 +41,35 @@ func (t *EmailTask) Execute(ctx context.Context) error {
 	return nil
 }
 
+// SMSTask is a custom task type for sending SMS messages
+type SMSTask struct {
+	ytask.BaseTask
+	To      string
+	Message string
+}
+
+// NewSMSTask creates a new SMS task
+func NewSMSTask(id string, priority int, to, message string) *SMSTask {
+	baseTask := ytask.NewBaseTask(id, "sms", priority)
+	return &SMSTask{
+		BaseTask: *baseTask,
+		To:       to,
+		Message:  message,
+	}
+}
+
+// Execute runs the SMS task
+func (t *SMSTask) Execute(ctx context.Context) error {
+	// In a real application, this would send an actual SMS
+	fmt.Printf("Sending SMS to %s\n", t.To)
+
+	// Simulate work
+	time.Sleep(300 * time.Millisecond)
+
+	fmt.Printf("SMS sent to %s\n", t.To)
+	return nil
+}
+
 // DataProcessingTask is a custom task type for processing data
 type DataProcessingTask struct {
 	ytask.BaseTask
@@ -65,6 +96,38 @@ func (t *DataProcessingTask) Execute(ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 			fmt.Printf("Processed %d/%d MB\n", i+10, t.DataSize)
+		}
+	}
+
+	return nil
+}
+
+// ImageProcessingTask is a custom task type for processing images
+type ImageProcessingTask struct {
+	ytask.BaseTask
+	ImageCount int // Number of images to process
+}
+
+// NewImageProcessingTask creates a new image processing task
+func NewImageProcessingTask(id string, priority int, imageCount int) *ImageProcessingTask {
+	baseTask := ytask.NewBaseTask(id, "image-processing", priority)
+	return &ImageProcessingTask{
+		BaseTask:   *baseTask,
+		ImageCount: imageCount,
+	}
+}
+
+// Execute runs the image processing task
+func (t *ImageProcessingTask) Execute(ctx context.Context) error {
+	fmt.Printf("Processing %d images\n", t.ImageCount)
+
+	// Simulate work with potential for cancellation
+	for i := 0; i < t.ImageCount; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+			fmt.Printf("Processed image %d/%d\n", i+1, t.ImageCount)
 		}
 	}
 
@@ -120,8 +183,8 @@ func main() {
 	// Add logging middleware
 	scheduler.Use(LoggingMiddleware)
 
-	// Register email task type with 3 priority levels
-	scheduler.RegisterTaskType("email", ytask.TaskTypeConfig{
+	// Register email task type with 3 priority levels in "communication" namespace
+	scheduler.RegisterTaskTypeWithNamespace("email", "communication", ytask.TaskTypeConfig{
 		MaxConcurrency:   2,
 		PriorityLevels:   3,
 		PriorityMode:     ytask.PriorityModeStrict,
@@ -129,14 +192,34 @@ func main() {
 		FailureHandler:   EmailFailureHandler,
 	})
 
-	// Register data processing task type with 5 priority levels
-	scheduler.RegisterTaskType("data-processing", ytask.TaskTypeConfig{
+	// Register SMS task type in the same "communication" namespace
+	scheduler.RegisterTaskTypeWithNamespace("sms", "communication", ytask.TaskTypeConfig{
+		MaxConcurrency:   2,
+		PriorityLevels:   3,
+		PriorityMode:     ytask.PriorityModeStrict,
+		FilterDuplicates: true,
+	})
+
+	// Register data processing task type with 5 priority levels in "processing" namespace
+	scheduler.RegisterTaskTypeWithNamespace("data-processing", "processing", ytask.TaskTypeConfig{
 		MaxConcurrency:      3,
 		PriorityLevels:      5,
 		PriorityMode:        ytask.PriorityModePercentage,
 		PriorityPercentages: []int{10, 15, 20, 25, 30}, // Higher priority gets higher percentage
 		FilterDuplicates:    false,
 	})
+
+	// Register image processing task type in the same "processing" namespace
+	scheduler.RegisterTaskTypeWithNamespace("image-processing", "processing", ytask.TaskTypeConfig{
+		MaxConcurrency:   2,
+		PriorityLevels:   3,
+		PriorityMode:     ytask.PriorityModeStrict,
+		FilterDuplicates: false,
+	})
+
+	// Set namespace concurrency limits
+	scheduler.SetNamespaceMaxConcurrency("communication", 3) // Max 3 concurrent tasks in communication namespace
+	scheduler.SetNamespaceMaxConcurrency("processing", 4)    // Max 4 concurrent tasks in processing namespace
 
 	// Create a resource monitor
 	monitor := ytask.NewResourceMonitor(scheduler, 80.0, 80.0)
@@ -159,6 +242,18 @@ func main() {
 		scheduler.AddTask(task)
 	}
 
+	// Add some SMS tasks (also in communication namespace)
+	for i := 0; i < 3; i++ {
+		priority := i % 3 // 0, 1, 2
+		task := NewSMSTask(
+			fmt.Sprintf("sms-%d", i),
+			priority,
+			fmt.Sprintf("+1555123456%d", i),
+			fmt.Sprintf("Test SMS message %d", i),
+		)
+		scheduler.AddTask(task)
+	}
+
 	// Add some data processing tasks
 	for i := 0; i < 3; i++ {
 		priority := i % 5 // 0, 1, 2, 3, 4
@@ -166,6 +261,17 @@ func main() {
 			fmt.Sprintf("data-%d", i),
 			priority,
 			(i+1)*50, // 50, 100, 150 MB
+		)
+		scheduler.AddTask(task)
+	}
+
+	// Add some image processing tasks (also in processing namespace)
+	for i := 0; i < 2; i++ {
+		priority := i % 3 // 0, 1
+		task := NewImageProcessingTask(
+			fmt.Sprintf("image-%d", i),
+			priority,
+			(i+1)*3, // 3, 6 images
 		)
 		scheduler.AddTask(task)
 	}
@@ -188,15 +294,40 @@ func main() {
 	fmt.Println("\nPausing email tasks...")
 	scheduler.PauseTaskType("email")
 
-	// Wait for remaining tasks to complete
-	time.Sleep(10 * time.Second)
+	// Wait for a moment
+	time.Sleep(2 * time.Second)
 
-	// Resume email tasks
-	fmt.Println("\nResuming email tasks...")
-	scheduler.ResumeTaskType("email")
+	// Print stats after pausing email tasks
+	fmt.Println("\nTask statistics after pausing email tasks:")
+	printStats(scheduler)
+
+	// Pause the entire communication namespace
+	fmt.Println("\nPausing the entire communication namespace...")
+	scheduler.PauseNamespace("communication")
+
+	// Wait for a moment
+	time.Sleep(2 * time.Second)
+
+	// Print stats after pausing communication namespace
+	fmt.Println("\nTask statistics after pausing communication namespace:")
+	printStats(scheduler)
+
+	// Wait for processing tasks to make progress
+	time.Sleep(5 * time.Second)
+
+	// Resume the communication namespace
+	fmt.Println("\nResuming the communication namespace...")
+	scheduler.ResumeNamespace("communication")
+
+	// Wait for a moment
+	time.Sleep(2 * time.Second)
+
+	// Print stats after resuming communication namespace
+	fmt.Println("\nTask statistics after resuming communication namespace:")
+	printStats(scheduler)
 
 	// Wait for all tasks to complete
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	// Print final stats
 	fmt.Println("\nFinal task statistics:")
@@ -219,10 +350,47 @@ func printStats(scheduler *ytask.Scheduler) {
 		globalStats.Queued, globalStats.Executing, globalStats.Completed,
 		globalStats.Failed, globalStats.Cancelled)
 
+	// Get namespace information using reflection (since these are not exposed via public methods)
+	// In a real application, you would add public methods to access this information
+	schedulerValue := reflect.ValueOf(scheduler).Elem()
+	taskTypeToNamespace := schedulerValue.FieldByName("taskTypeToNamespace").Interface().(map[string]string)
+	namespaceMaxConcurrency := schedulerValue.FieldByName("namespaceMaxConcurrency").Interface().(map[string]int)
+	namespaceActiveTasks := schedulerValue.FieldByName("namespaceActiveTasks").Interface().(map[string]int)
+	pausedNamespaces := schedulerValue.FieldByName("pausedNamespaces").Interface().(map[string]bool)
+
+	// Group task types by namespace
+	namespaceToTaskTypes := make(map[string][]string)
+	for taskType, namespace := range taskTypeToNamespace {
+		namespaceToTaskTypes[namespace] = append(namespaceToTaskTypes[namespace], taskType)
+	}
+
+	// Print namespace stats
+	fmt.Println("Stats by namespace:")
+	for namespace, taskTypes := range namespaceToTaskTypes {
+		maxConcurrency := namespaceMaxConcurrency[namespace]
+		activeTasks := namespaceActiveTasks[namespace]
+		paused := ""
+		if pausedNamespaces[namespace] {
+			paused = " (PAUSED)"
+		}
+
+		fmt.Printf("  Namespace: %s%s - Active: %d/%d\n",
+			namespace, paused, activeTasks, maxConcurrency)
+
+		// Print task types in this namespace
+		fmt.Printf("    Task types: %s\n", strings.Join(taskTypes, ", "))
+	}
+
 	fmt.Println("Stats by task type:")
 	for taskType, typeStat := range stats {
-		fmt.Printf("  %s: Queued: %d, Executing: %d, Completed: %d, Failed: %d, Cancelled: %d\n",
-			taskType, typeStat.Queued, typeStat.Executing, typeStat.Completed,
+		namespace := taskTypeToNamespace[taskType]
+		namespaceInfo := ""
+		if namespace != "" {
+			namespaceInfo = fmt.Sprintf(" (Namespace: %s)", namespace)
+		}
+
+		fmt.Printf("  %s%s: Queued: %d, Executing: %d, Completed: %d, Failed: %d, Cancelled: %d\n",
+			taskType, namespaceInfo, typeStat.Queued, typeStat.Executing, typeStat.Completed,
 			typeStat.Failed, typeStat.Cancelled)
 	}
 }
