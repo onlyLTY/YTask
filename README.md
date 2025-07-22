@@ -2,6 +2,7 @@
 
 [![Test and Coverage](https://github.com/onlyLTY/YTask/actions/workflows/codecov.yml/badge.svg)](https://github.com/onlyLTY/YTask/actions/workflows/codecov.yml)
 [![codecov](https://codecov.io/github/onlyLTY/YTask/graph/badge.svg?token=UN1OQGLJ55)](https://codecov.io/github/onlyLTY/YTask)
+[![Go Report Card](https://goreportcard.com/badge/github.com/onlyLTY/YTask)](https://goreportcard.com/report/github.com/onlyLTY/YTask)
 
 YTask is a powerful, flexible task scheduling system for Go applications with advanced features for priority management, concurrency control, and system resource monitoring.
 
@@ -275,4 +276,4 @@ When contributing, please:
 
 1. Write tests for new features or bug fixes
 2. Ensure your changes maintain or improve the current code coverage
-3. Run tests locally before submitting a PR with `go test -race -coverprofile=coverage.out -covermode=atomic ./...`
+3. Run tests locally before submitting a PR with `go test -coverprofile=coverage.out ./...`
